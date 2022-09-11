@@ -1,0 +1,618 @@
+/*
+MQTT Client for Thinkspeak
+Author : R. Sutthaweekul
+*/
+
+#include <M5StickCPlus.h>
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include <ArduinoJson.h>
+#include "config.h"
+#include <Wire.h>
+#include <Adafruit_ADS1X15.h>
+#include <Adafruit_PWMServoDriver.h>
+Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();
+
+Adafruit_ADS1015 ads1015;
+#define SERVOMIN 100
+#define SERVOMAX 2200
+// ADS1115 I2C address is 0x48(72)
+#define Addr_I2C_ADC 0x48
+// PCA9685 I2C address is 0x40(64)
+#define Addr_I2C_Servo 0x40
+int mode = 0;
+unsigned int data[2];
+#define I2C_SDA 32
+#define I2C_SCL 33
+
+float Thump_adc = 0.0F;
+float Index_adc = 0.0F;
+float Middle_adc = 0.0F;
+float Ring_adc = 0.0F;
+//Gyro
+float accX = 0.0F;
+float accY = 0.0F;
+float accZ = 0.0F;
+
+float gyroX = 0.0F;
+float gyroY = 0.0F;
+float gyroZ = 0.0F;
+
+float pitch = 0.0F;
+float roll  = 0.0F;
+float yaw   = 0.0F;
+
+
+
+//WIFI
+const char* ssid = WIFI_SSID;
+const char* password = WIFI_PASSWD;
+const char* mqtt_server = MQTT_SERVER;
+
+
+//MQTT client
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+void setup_wifi() {
+
+  delay(10);
+  // We start by connecting to a WiFi network
+  Serial.println();
+  Serial.print("Connecting to ");
+  Serial.println(ssid);
+
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");  
+  }
+
+  randomSeed(micros());
+
+  Serial.println("");
+  Serial.println("WiFi connected");
+  Serial.println("IP address: ");
+  Serial.println(WiFi.localIP());
+}
+
+void callback(char* topic, byte* payload, unsigned int length) {
+  Serial.print("Message arrived [");
+  Serial.print(topic);
+  Serial.print("] ");
+  for (int i = 0; i < length; i++) {
+    Serial.print((char)payload[i]);
+  }
+  Serial.println();
+}
+
+void reconnect() {
+  // Loop until it is connected
+  while (!client.connected()) {
+
+    Serial.print("Attempting MQTT connection...");
+    String clientId = "MQTT_Werkplaats";
+    // Attempt to connect
+    if (client.connect(SECRET_MQTT_CLIENT_ID, SECRET_MQTT_USERNAME, SECRET_MQTT_PASSWORD)) {
+      Serial.println("connected");
+      
+      char subscribe_topic[100];
+      sprintf(subscribe_topic,"channels/%s/subscribe",MQTT_CHANNEL);
+      client.subscribe(subscribe_topic);
+      sprintf(subscribe_topic,"channels/%s/subscribe/fields/%s",MQTT_CHANNEL,"field1");
+      client.subscribe(subscribe_topic);
+      
+      Serial.println("subscribed");
+      M5.Lcd.fillScreen(GREEN);
+      M5.Lcd.setCursor(15, 10);
+      M5.Lcd.setTextColor(WHITE);
+      M5.Lcd.setTextSize(4);
+      M5.Lcd.printf("READY");
+      client.subscribe("tkkrlab/spacestate");
+
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 5 seconds");
+      // Wait 5 seconds before retrying
+      delay(1000);
+    }
+  }
+}
+
+void setup() {
+
+  M5.begin();
+  M5.Imu.Init();
+  init_I2C_Servo();
+  Wire.begin(I2C_SDA,I2C_SCL);
+   ads1015.begin();
+  /*
+  M5.Lcd.fillScreen(BLUE);
+  M5.Lcd.setCursor(15, 10);
+  M5.Lcd.setTextColor(WHITE);
+  M5.Lcd.setTextSize(5);
+  M5.Lcd.printf("BOOT");
+  M5.Lcd.setRotation(3);  // Rotate the screen. 将屏幕旋转
+  M5.Lcd.fillScreen(BLACK);
+  M5.Lcd.setTextSize(1);
+  M5.Lcd.setCursor(80, 15);  // set the cursor location.  设置光标位置
+  M5.Lcd.println("IMU TEST");
+  M5.Lcd.setCursor(30, 30);
+  M5.Lcd.println("  X       Y       Z");
+  M5.Lcd.setCursor(30, 70);*/
+    
+  Serial.begin(115200);
+  
+  setup_wifi();
+  client.setServer(mqtt_server, 1883);
+  client.setCallback(callback);
+  client.setBufferSize(2048);
+
+  //pinMode(BUTTON_A_PIN, INPUT);
+}
+
+void loop() {
+
+  if (!client.connected()) {
+    reconnect();
+  }
+  client.loop();
+  char armTopic[40];
+  char fingerTopic[40];
+//  char payload[200];
+  
+ init_I2C_Servo();
+ float Thump_adc = Analog_Thump();
+ float Middle_adc = Analog_Middle();
+ float Index_adc = Analog_Index();
+ float Ring_adc = Analog_Ring();
+// setLimitServo(Thump_adc,Index_adc,Middle_adc,Ring_adc );
+  int16_t adc0, adc1, adc2, adc3;
+
+  adc0 = ads1015.readADC_SingleEnded(0);
+  adc1 = ads1015.readADC_SingleEnded(1);
+  adc2 = ads1015.readADC_SingleEnded(2);
+  adc3 = ads1015.readADC_SingleEnded(3);
+  M5.IMU.getGyroData(&gyroX, &gyroY, &gyroZ);
+  M5.IMU.getAccelData(&accX, &accY, &accZ);
+  M5.IMU.getAhrsData(&pitch, &roll, &yaw);
+  //M5.IMU.getTempData(&temp);
+  M5.Lcd.setCursor(30, 40);
+  M5.Lcd.printf("gyroX: %6.2f \n gyroY: %6.2f \n gyroZ: %6.2f \n     ", gyroX, gyroY, gyroZ);
+  M5.Lcd.setCursor(170, 40);
+  M5.Lcd.print("o/s");
+  M5.Lcd.setCursor(30, 50);
+  //M5.Lcd.printf(" accX: %5.2f \n  accY: %5.2f \n  accZ: %5.2f  \n ", accX, accY, accZ);
+  if(adc0>=1000){
+     pwm.setPWM(0, 1024, 4096);
+  }
+  else if(adc1>=1000){
+     pwm.setPWM(1, 1024, 4096);
+  }
+  else if(adc0<1000){
+      pwm.setPWM(0, 4096, 1024);
+      }
+  else if(adc1<1000){
+       pwm.setPWM(1, 4096, 1024);
+ 
+  }
+  sprintf(armTopic,"See_it2022/arm/move");
+  sprintf(fingerTopic,"See_it2022/glove/grasp");
+  DynamicJsonDocument docArm(1024);
+  DynamicJsonDocument doc(1024);
+  doc["Thump_finger"] = adc0;
+  doc["Index_finger"] = adc1;
+  doc["Middle_finger"] = adc2;
+  doc["Ring_finger"] = adc3;
+  docArm["GyroX"] = gyroX;
+  docArm["GyroY"] = gyroY;
+  docArm["GyroZ"] = gyroZ;
+  docArm["AccX"] = accX;
+  docArm["AccY"] = accY;
+  docArm["AccZ"] = accZ;
+  docArm["Pitch"] = pitch;
+  docArm["Roll"] = roll;
+  docArm["Yaw"] = yaw;
+
+  
+//  sprintf(payload,"{\"GyroX\":\"%6.2f\",\"GyroY\":\"%6.2f\",\"GyroZ\":\"6.2f\", \"AccX\":\"%5.2f\",\"AccY\":\"%5.2f\", \"AccZ\":\"%5.2f\",\"Pitch\":\"%5.2f\",\"Roll\":\"%5.2f\",\"Yaw\":%5.2f\",\"status\":\"MQTTPUBLISH\"}", gyroX, gyroY,gyroZ, accX, accY, accZ, pitch, roll, yaw);
+//  JsonObject& root = jsonBuffer.parseObject(json);
+//  auto error = serializeJson(doc, payload)
+    
+ char payloadFinger[300];
+ char payloadArm[300];
+ serializeJson(doc, payloadFinger);
+ serializeJson(docArm, payloadArm);
+
+ client.publish(armTopic, payloadArm);
+ client.publish(fingerTopic, payloadFinger);
+ delay(300);
+
+
+//  sprintf(payload,"GyroX=%6.2f&GyroY=%6.2f&GyroZ=6.2f&AccX=%5.2f&AccY=%5.2f&AccZ=%5.2f&Pitch=%5.2f&Roll=%5.2f&Yaw=%5.2f&status=MQTTPUBLISH", gyroX, gyroY,gyroZ, accX, accY, accZ, pitch, roll, yaw);
+//  sprintf(payload, {
+//    "gyroX": %6.2f
+//    }
+//  client.publish(topic, payload);
+//  delay(1000);
+  /*
+
+  static int c=0;
+  
+  if(digitalRead(BUTTON_A_PIN) == 0) {
+    char topic[40];
+    char payload[100];
+    sprintf(topic,"channels/%s/publish", MQTT_CHANNEL);
+    sprintf(payload,"field1=%d&field2=%d&field3=%d&field4=%d&status=MQTTPUBLISH",c,c%2,c%3,c%4);
+    client.publish(topic, payload);
+    Serial.println("Button pressed");   
+    delay(500);
+
+    M5.Lcd.setCursor(20, 53);
+    M5.Lcd.setTextColor(WHITE,GREEN);
+    M5.Lcd.setTextSize(2);
+    M5.Lcd.printf("c=%2d",c);
+  
+    c>=12? c=0: c++; */
+  };
+
+
+
+
+
+
+
+
+
+
+  void init_I2C_Servo()
+{
+    Wire.begin();
+  // Initialise Serial Communication, Baud rate = 9600
+  Serial.begin(9600);
+
+  // Start I2C Transmission
+  Wire.beginTransmission(Addr_I2C_Servo);
+  // Select MODE2 register
+  Wire.write(0x01);
+  // All pin's outputs are configured with a totem pole structure.
+  Wire.write(0x04);
+  // Stop I2C Transmission
+  Wire.endTransmission();
+
+  // Start I2C Transmission
+  Wire.beginTransmission(Addr_I2C_Servo);
+  // Select MODE1 register
+  Wire.write(0x00);
+  // Response to LED all-call I2C address
+  Wire.write(0x01);
+  // Stop I2C Transmission
+  Wire.endTransmission();
+  delay(5);
+
+  // Start I2C Transmission
+  Wire.beginTransmission(Addr_I2C_Servo);
+  // Select data register
+  Wire.write(0x00);
+  // Stop I2C Transmission
+  Wire.endTransmission();
+
+  // Request 1 byte of data
+  Wire.requestFrom(Addr_I2C_Servo, 1);
+
+  // Read 1 byte of data
+  if (Wire.available() == 1)
+  {
+    mode = Wire.read();
+  }
+
+  // Start I2C Transmission
+  Wire.beginTransmission(Addr_I2C_Servo);
+  // Select MODE1 register
+  Wire.write(0x00);
+  // Response to LED all-call I2C address
+  Wire.write(0x10);
+  // Stop I2C Transmission
+  Wire.endTransmission();
+
+  // Start I2C Transmission
+  Wire.beginTransmission(Addr_I2C_Servo);
+  // Select PRE_SCALE register
+  Wire.write(0xFE);
+  // Set prescale frequency to 60 Hz
+  Wire.write(0x65);
+  // Stop I2C Transmission
+  Wire.endTransmission();
+
+  // Start I2C Transmission
+  Wire.beginTransmission(Addr_I2C_Servo);
+  // Select MODE1 register
+  Wire.write(0x00);
+  // Response to LED all-call I2C address
+  Wire.write((byte)mode);
+  // Stop I2C Transmission
+  Wire.endTransmission();
+  delay(5);
+
+  // Start I2C Transmission
+  Wire.beginTransmission(Addr_I2C_Servo);
+  // Select MODE1 register
+  Wire.write(0x00);
+  // Response to LED all-call I2C address
+  Wire.write((mode | 0x80));
+  // Stop I2C Transmission
+  Wire.endTransmission();
+
+    
+}
+
+
+float Analog_Ring(){
+   // Start I2C Transmission
+  Wire.beginTransmission(Addr_I2C_ADC);
+  // Select data register
+  Wire.write(0x00);
+  // Stop I2C Transmission
+  Wire.endTransmission();
+
+  // Request 2 bytes of data
+  Wire.requestFrom(Addr_I2C_ADC, 2);
+
+  // Read 2 bytes of data
+  // raw_adc msb, raw_adc lsb
+  if (Wire.available() == 2)
+  {
+    data[0] = Wire.read();
+    data[1] = Wire.read();
+  }
+
+  // Convert the data
+  float  raw_adc = (data[0] * 256.0) + data[1];
+  if (raw_adc > 32767)
+  {
+    raw_adc -= 65535;
+  }
+  Ring_adc = raw_adc;
+  return Ring_adc;
+  // Output data to serial monitor
+  //Serial.print("Digital Value of Analog Input on Channel-Ring: ");
+  //Serial.println(raw_adc);
+  //lay(500);
+  
+  }
+
+float Analog_Index(){
+  // Start I2C Transmission
+  Wire.beginTransmission(Addr_I2C_ADC);
+  // Select configuration register
+  Wire.write(0x01);
+  // AINP = AIN1 and AINN = GND, +/- 2.048V
+  Wire.write(0xD4);
+  // Continuous conversion mode, 128 SPS
+  Wire.write(0x83);
+  // Stop I2C Transmission
+  Wire.endTransmission();
+  //lay(300);
+
+  // Start I2C Transmission
+  Wire.beginTransmission(Addr_I2C_ADC);
+  // Select data register
+  Wire.write(0x00);
+  // Stop I2C Transmission
+  Wire.endTransmission();
+
+  // Request 2 bytes of data
+  Wire.requestFrom(Addr_I2C_ADC, 2);
+
+  // Read 2 bytes of data
+  // raw_adc msb, raw_adc lsb
+  if (Wire.available() == 2)
+  {
+    data[0] = Wire.read();
+    data[1] = Wire.read();
+  }
+
+  // Convert the data
+  float raw_adc = (data[0] * 256.0) + data[1];
+  if (raw_adc > 32767)
+  {
+    raw_adc -= 65535;
+  }
+  Index_adc = raw_adc;
+  return Index_adc;
+  // Output data to serial monitor
+  //Serial.print("Digital Value of Analog Input on Channel-Index : ");
+  //Serial.println(raw_adc);
+  //lay(500);
+  
+  
+  
+}
+
+
+float Analog_Middle(){
+   // Start I2C Transmission
+  Wire.beginTransmission(Addr_I2C_ADC);
+  // Select configuration register
+  Wire.write(0x01);
+  // AINP = AIN2 and AINN = GND, +/- 2.048V
+  Wire.write(0xE4);
+  // Continuous conversion mode, 128 SPS
+  Wire.write(0x83);
+  // Stop I2C Transmission
+  Wire.endTransmission();
+  //lay(300);
+
+  // Start I2C Transmission
+  Wire.beginTransmission(Addr_I2C_ADC);
+  // Select data register
+  Wire.write(0x00);
+  // Stop I2C Transmission
+  Wire.endTransmission();
+
+  // Request 2 bytes of data
+  Wire.requestFrom(Addr_I2C_ADC, 2);
+
+  // Read 2 bytes of data
+  // raw_adc msb, raw_adc lsb
+  if (Wire.available() == 2)
+  {
+    data[0] = Wire.read();
+    data[1] = Wire.read();
+  }
+
+  // Convert the data
+  float raw_adc = (data[0] * 256.0) + data[1];
+  if (raw_adc > 32767)
+  {
+    raw_adc -= 65535;
+  }
+  Middle_adc = raw_adc;
+  return Middle_adc;
+  // Output data to serial monitor
+  //Serial.print("Digital Value of Analog Input on Channel-Middle: ");
+  //Serial.println(raw_adc);
+  //lay(500);
+
+  
+  
+  
+  
+  }
+
+float Analog_Thump(){
+  Wire.beginTransmission(Addr_I2C_ADC);
+  // Select configuration register
+  Wire.write(0x01);
+  // AINP = AIN0 and AINN = GND, +/- 2.048V
+  Wire.write(0xC4);
+  // Continuous conversion mode, 128 SPS
+  Wire.write(0x83);
+  // Stop I2C Transmission
+  Wire.endTransmission();
+  //lay(300);
+
+  // Start I2C Transmission
+  Wire.beginTransmission(Addr_I2C_ADC);
+  // Select data register
+  Wire.write(0x00);
+  // Stop I2C Transmission
+  Wire.endTransmission();
+
+  // Request 2 bytes of data
+  Wire.requestFrom(Addr_I2C_ADC, 2);
+
+  // Read 2 bytes of data
+  // raw_adc msb, raw_adc lsb
+  if (Wire.available() == 2)
+  {
+    data[0] = Wire.read();
+    data[1] = Wire.read();
+  }
+
+  // Convert the data
+  float raw_adc = (data[0] * 256.0) + data[1];
+  if (raw_adc > 32767)
+  {
+    raw_adc -= 65535;
+  }
+  Thump_adc = raw_adc;
+  return Thump_adc;
+  // Output data to serial monitor
+  //Serial.print("Digital Value of Analog Input on Channel-thump : ");
+  //Serial.println(raw_adc);
+  //lay(500);
+  
+  }
+
+void setLimitServo(){
+  if ((Thump_adc||Middle_adc||Index_adc||Ring_adc) < 30000){
+        for (int i = 0; i < 4096; i += 3){
+    // Start I2C Transmission
+    Wire.beginTransmission(Addr_I2C_Servo);
+    // Select ALL_LED_ON_L register
+    Wire.write(0xFA);
+    // ALL_LED_ON lower byte
+    Wire.write(0x00);
+    // Stop I2C Transmission
+    Wire.endTransmission();
+    //lay(100);
+    
+    // Start I2C Transmission
+    Wire.beginTransmission(Addr_I2C_Servo);
+    // Select ALL_LED_ON_H register
+    Wire.write(0xFB);
+    // ALL_LED_ON higher byte
+    Wire.write(0x00);
+    // Stop I2C Transmission
+    Wire.endTransmission();
+    //lay(100);
+    
+    // Start I2C Transmission
+    Wire.beginTransmission(Addr_I2C_Servo);
+    // Select ALL_LED_OFF_L register
+    Wire.write(0xFC);
+    // ALL_LED_OFF lower byte
+    Wire.write((byte)(i & 0xFF));
+    // Stop I2C Transmission
+    Wire.endTransmission();
+    
+    // Start I2C Transmission
+    Wire.beginTransmission(Addr_I2C_Servo);
+    // Select ALL_LED_OFF_H register
+    Wire.write(0xFD);
+    // ALL_LED_OFF higher byte
+    Wire.write((i >> 8));
+    // Stop I2C Transmission
+    Wire.endTransmission();
+    
+    }
+  }
+   else if ((Thump_adc,Middle_adc, Index_adc, Ring_adc)> 30000) {
+    for(int i = 4095; i >= 0; i -= 3){
+    // Start I2C Transmission
+    Wire.beginTransmission(Addr_I2C_Servo);
+    // Select ALL_LED_ON_L register
+    Wire.write(0xFA);
+    // ALL_LED_ON lower byte
+    Wire.write(0x00);
+    // Stop I2C Transmission
+    Wire.endTransmission();
+    //lay(100);
+    
+    // Start I2C Transmission
+    Wire.beginTransmission(Addr_I2C_Servo);
+    // Select ALL_LED_ON_H register
+    Wire.write(0xFB);
+    // ALL_LED_ON higher byte
+    Wire.write(0x00);
+    // Stop I2C Transmission
+    Wire.endTransmission();
+   //elay(100);
+    
+    
+    // Start I2C Transmission
+    Wire.beginTransmission(Addr_I2C_Servo);
+    // Select ALL_LED_OFF_L register
+    Wire.write(0xFC);
+    // ALL_LED_OFF lower byte
+    Wire.write((byte)(i & 0xFF));
+    // Stop I2C Transmission
+    Wire.endTransmission();
+    //lay(100);
+    
+    // Start I2C Transmission
+    Wire.beginTransmission(Addr_I2C_Servo);
+    // Select ALL_LED_OFF_H register
+    Wire.write(0xFD);
+    // ALL_LED_OFF higher byte
+    Wire.write((i >> 8));
+    // Stop I2C Transmission
+    Wire.endTransmission();
+    //lay(100);
+      }  
+    }
+  }
